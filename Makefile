@@ -9,7 +9,7 @@ GOFMT=gofmt
 GOLINT=golangci-lint
 
 # Build variables
-BINARY_NAME=tmpl
+BINARY_NAME=amq
 BINARY_UNIX=$(BINARY_NAME)_unix
 BUILD_DIR=./build
 COVERAGE_DIR=./coverage

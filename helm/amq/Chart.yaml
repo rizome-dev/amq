@@ -1,0 +1,21 @@
+apiVersion: v2
+name: amq
+description: Agentic Message Queue - High-performance message queue for agent communication
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - amq
+  - message-queue
+  - agents
+  - ai
+  - badgerdb
+home: https://github.com/rizome-dev/amq
+sources:
+  - https://github.com/rizome-dev/amq
+maintainers:
+  - name: Rizome Labs
+    email: hi@rizome.dev
+    url: https://rizome.dev
+engine: gotpl
+kubeVersion: ">=1.19.0-0"

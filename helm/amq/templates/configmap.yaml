@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "amq.fullname" . }}
+  labels:
+    {{- include "amq.labels" . | nindent 4 }}
+data:
+  amq.yaml: |
+    # AMQ Configuration
+    storage:
+      path: {{ .Values.config.storePath }}
+    
+    queue:
+      workerPoolSize: {{ .Values.config.workerPoolSize }}
+      heartbeatInterval: {{ .Values.config.heartbeatInterval }}
+      messageTimeout: {{ .Values.config.messageTimeout }}
+    
+    logging:
+      level: {{ .Values.config.logLevel }}
+    
+    server:
+      port: {{ .Values.service.port }}
+      
+    cluster:
+      enabled: true
+      replicas: {{ .Values.replicaCount }}
+      service: {{ include "amq.fullname" . }}-headless
