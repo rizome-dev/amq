@@ -149,7 +149,6 @@ AMQ_TLS_KEY=/certs/server.key       # TLS private key
 
 ### Helm Values
 ```yaml
-# values-production.yaml
 replicas: 3
 resources:
   requests:
@@ -192,12 +191,8 @@ amq_circuit_breaker_state           # Circuit breaker state (0=closed, 1=open, 2
 amq_pool_connections_active         # Active pooled connections
 ```
 
-### Grafana Dashboard
-Pre-built dashboards available at [grafana.com/dashboards/amq](https://grafana.com)
-
 ### Alert Rules
 ```yaml
-# Example Prometheus alerts
 - alert: HighQueueDepth
   expr: amq_queue_depth > 10000
   for: 5m
@@ -219,34 +214,6 @@ Pre-built dashboards available at [grafana.com/dashboards/amq](https://grafana.c
 - **Latency**: < 1ms p99 (local network)
 - **Concurrent Clients**: 10,000+ per node
 - **Message Size**: Up to 10MB per message
-
-## Best Practices
-
-### Topic Naming
-```
-<domain>.<entity>.<action>
-
-Examples:
-orders.payment.process
-users.profile.update
-analytics.events.aggregate
-```
-
-## Roadmap
-
-### Q1 2025
-- [ ] Stream processing API
-- [ ] GraphQL API support
-- [ ] Advanced routing rules
-- [ ] Message deduplication
-
-### Q2 2025  
-- [ ] WASM plugin system
-- [ ] Kafka bridge
-- [ ] Time-series message store
-
-### Contact
-- **Rizome Labs**: [sam@rizome.dev](mailto:sam@rizome.dev)
 
 ---
 
