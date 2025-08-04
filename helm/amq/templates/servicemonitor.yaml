@@ -1,19 +1,28 @@
-{{- if and .Values.monitoring.enabled .Values.monitoring.serviceMonitor.enabled }}
+{{- if and .Values.monitoring.enabled .Values.monitoring.prometheus.serviceMonitor.enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: {{ include "amq.fullname" . }}
   labels:
     {{- include "amq.labels" . | nindent 4 }}
-    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- with .Values.monitoring.prometheus.serviceMonitor.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
-  endpoints:
-    - port: http
-      path: {{ .Values.monitoring.serviceMonitor.path }}
-      interval: {{ .Values.monitoring.serviceMonitor.interval }}
   selector:
     matchLabels:
       {{- include "amq.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: {{ if .Values.service.metrics.enabled }}metrics{{ else }}http{{ end }}
+      path: {{ .Values.monitoring.prometheus.serviceMonitor.path }}
+      interval: {{ .Values.monitoring.prometheus.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.prometheus.serviceMonitor.scrapeTimeout }}
+      {{- with .Values.monitoring.prometheus.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.monitoring.prometheus.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 {{- end }}

@@ -54,9 +54,10 @@ func New(config Config) (*AMQ, error) {
 	
 	// Create queue manager
 	queueConfig := queue.Config{
-		WorkerPoolSize:    config.WorkerPoolSize,
-		HeartbeatInterval: config.HeartbeatInterval,
-		MessageTimeout:    config.MessageTimeout,
+		WorkerPoolSize:      config.WorkerPoolSize,
+		MessageTimeout:      config.MessageTimeout,
+		ExpiryCheckInterval: 1 * time.Minute,
+		RetryInterval:       30 * time.Second,
 	}
 	manager := queue.NewManager(store, queueConfig)
 	
@@ -148,4 +149,9 @@ type ClientFilter struct {
 // Version returns the AMQ version
 func Version() string {
 	return "0.1.0"
+}
+
+// Manager returns the underlying queue manager for advanced usage
+func (a *AMQ) Manager() *queue.Manager {
+	return a.manager
 }

@@ -16,8 +16,8 @@ func TestNewTaskMessage(t *testing.T) {
 		t.Errorf("Expected message type %v, got %v", MessageTypeTask, msg.Type)
 	}
 	
-	if msg.FromAgent != fromAgent {
-		t.Errorf("Expected from agent %s, got %s", fromAgent, msg.FromAgent)
+	if msg.From != fromAgent {
+		t.Errorf("Expected from agent %s, got %s", fromAgent, msg.From)
 	}
 	
 	if msg.Topic != topic {
@@ -52,12 +52,12 @@ func TestNewDirectMessage(t *testing.T) {
 		t.Errorf("Expected message type %v, got %v", MessageTypeDirect, msg.Type)
 	}
 	
-	if msg.FromAgent != fromAgent {
-		t.Errorf("Expected from agent %s, got %s", fromAgent, msg.FromAgent)
+	if msg.From != fromAgent {
+		t.Errorf("Expected from agent %s, got %s", fromAgent, msg.From)
 	}
 	
-	if msg.ToAgent != toAgent {
-		t.Errorf("Expected to agent %s, got %s", toAgent, msg.ToAgent)
+	if msg.To != toAgent {
+		t.Errorf("Expected to agent %s, got %s", toAgent, msg.To)
 	}
 	
 	if msg.Topic != "" {

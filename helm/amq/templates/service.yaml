@@ -11,13 +11,28 @@ metadata:
 spec:
   type: {{ .Values.service.type }}
   ports:
-    - port: {{ .Values.service.port }}
+    {{- if .Values.config.api.httpEnabled }}
+    - port: {{ .Values.service.http.port }}
       targetPort: http
-      protocol: TCP
+      protocol: {{ .Values.service.http.protocol }}
       name: http
+    {{- end }}
+    {{- if .Values.config.api.grpcEnabled }}
+    - port: {{ .Values.service.grpc.port }}
+      targetPort: grpc
+      protocol: {{ .Values.service.grpc.protocol }}
+      name: grpc
+    {{- end }}
+    {{- if .Values.service.metrics.enabled }}
+    - port: {{ .Values.service.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+    {{- end }}
   selector:
     {{- include "amq.selectorLabels" . | nindent 4 }}
 ---
+# Headless service for StatefulSet
 apiVersion: v1
 kind: Service
 metadata:
@@ -27,10 +42,19 @@ metadata:
 spec:
   type: ClusterIP
   clusterIP: None
+  publishNotReadyAddresses: true
   ports:
-    - port: {{ .Values.service.port }}
+    {{- if .Values.config.api.httpEnabled }}
+    - port: {{ .Values.service.http.port }}
       targetPort: http
-      protocol: TCP
+      protocol: {{ .Values.service.http.protocol }}
       name: http
+    {{- end }}
+    {{- if .Values.config.api.grpcEnabled }}
+    - port: {{ .Values.service.grpc.port }}
+      targetPort: grpc
+      protocol: {{ .Values.service.grpc.protocol }}
+      name: grpc
+    {{- end }}
   selector:
     {{- include "amq.selectorLabels" . | nindent 4 }}

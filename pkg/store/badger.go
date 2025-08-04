@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -37,6 +38,101 @@ func (s *BadgerStore) Open(path string) error {
 	go s.runGC()
 	
 	return nil
+}
+
+// MigrateLegacyQueues migrates existing queues from O(n) to O(1) format
+// This should be called after opening the database to ensure backward compatibility
+func (s *BadgerStore) MigrateLegacyQueues(ctx context.Context) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchSize = 10
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		
+		// Find all legacy queue message keys
+		prefix := []byte("queue:")
+		
+		var legacyQueues []string
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			key := it.Item().Key()
+			keyStr := string(key)
+			
+			// Check if this is a legacy queue messages key
+			if strings.HasSuffix(keyStr, ":msgs") && !strings.Contains(keyStr, ":items:") {
+				// Extract queue name: queue:name:msgs -> name
+				parts := strings.Split(keyStr, ":")
+				if len(parts) >= 3 {
+					queueName := strings.Join(parts[1:len(parts)-1], ":")
+					legacyQueues = append(legacyQueues, queueName)
+				}
+			}
+		}
+		
+		// Migrate each legacy queue
+		for _, queueName := range legacyQueues {
+			if err := s.migrateLegacyQueue(txn, queueName); err != nil {
+				return fmt.Errorf("failed to migrate queue %s: %w", queueName, err)
+			}
+		}
+		
+		return nil
+	})
+}
+
+// migrateLegacyQueue migrates a single queue from legacy format to new format
+func (s *BadgerStore) migrateLegacyQueue(txn *badger.Txn, queueName string) error {
+	legacyKey := queueMessagesKey(queueName)
+	
+	// Check if this queue has already been migrated
+	_, err := txn.Get(queueHeadKey(queueName))
+	if err == nil {
+		// Already migrated, just delete the legacy key
+		return txn.Delete(legacyKey)
+	}
+	
+	// Get legacy queue data
+	item, err := txn.Get(legacyKey)
+	if err == badger.ErrKeyNotFound {
+		return nil // Nothing to migrate
+	} else if err != nil {
+		return fmt.Errorf("failed to get legacy queue data: %w", err)
+	}
+	
+	var msgIDs []string
+	err = item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &msgIDs)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal legacy queue data: %w", err)
+	}
+	
+	// Skip empty queues
+	if len(msgIDs) == 0 {
+		return txn.Delete(legacyKey)
+	}
+	
+	// Create new queue structure
+	headKey := queueHeadKey(queueName)
+	tailKey := queueTailKey(queueName)
+	
+	// Set head and tail positions
+	if err := txn.Set(headKey, uint64ToBytes(0)); err != nil {
+		return fmt.Errorf("failed to set head position: %w", err)
+	}
+	if err := txn.Set(tailKey, uint64ToBytes(uint64(len(msgIDs)))); err != nil {
+		return fmt.Errorf("failed to set tail position: %w", err)
+	}
+	
+	// Store each message ID as individual items
+	for i, msgID := range msgIDs {
+		itemKey := queueItemKey(queueName, uint64(i))
+		if err := txn.Set(itemKey, []byte(msgID)); err != nil {
+			return fmt.Errorf("failed to store queue item: %w", err)
+		}
+	}
+	
+	// Delete legacy key
+	return txn.Delete(legacyKey)
 }
 
 // Close closes the BadgerDB connection
@@ -76,6 +172,33 @@ func queueKey(name string) []byte {
 
 func queueMessagesKey(name string) []byte {
 	return []byte(fmt.Sprintf("queue:%s:msgs", name))
+}
+
+// New O(1) queue key functions
+func queueHeadKey(name string) []byte {
+	return []byte(fmt.Sprintf("queue:%s:head", name))
+}
+
+func queueTailKey(name string) []byte {
+	return []byte(fmt.Sprintf("queue:%s:tail", name))
+}
+
+func queueItemKey(name string, seq uint64) []byte {
+	return []byte(fmt.Sprintf("queue:%s:items:%016x", name, seq))
+}
+
+// Helper functions for queue sequence numbers
+func uint64ToBytes(v uint64) []byte {
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, v)
+	return b
+}
+
+func bytesToUint64(b []byte) uint64 {
+	if len(b) != 8 {
+		return 0
+	}
+	return binary.BigEndian.Uint64(b)
 }
 
 func clientKey(id string) []byte {
@@ -311,116 +434,213 @@ func (s *BadgerStore) matchesFilter(msg *types.Message, filter MessageFilter) bo
 	return true
 }
 
-// EnqueueMessage adds a message ID to a queue
+// EnqueueMessage adds a message ID to a queue with O(1) complexity
 func (s *BadgerStore) EnqueueMessage(ctx context.Context, queueName string, msgID string) error {
 	return s.db.Update(func(txn *badger.Txn) error {
-		key := queueMessagesKey(queueName)
+		// Get current tail position
+		tailKey := queueTailKey(queueName)
+		var tail uint64 = 0
 		
-		// Get current queue
-		var msgIDs []string
-		item, err := txn.Get(key)
-		if err != nil && err != badger.ErrKeyNotFound {
-			return err
-		}
-		
+		item, err := txn.Get(tailKey)
 		if err == nil {
 			err = item.Value(func(val []byte) error {
-				return json.Unmarshal(val, &msgIDs)
+				tail = bytesToUint64(val)
+				return nil
 			})
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to read tail position: %w", err)
 			}
+		} else if err != badger.ErrKeyNotFound {
+			return fmt.Errorf("failed to get tail position: %w", err)
 		}
 		
-		// Append message ID
-		msgIDs = append(msgIDs, msgID)
-		
-		// Save updated queue
-		data, err := json.Marshal(msgIDs)
-		if err != nil {
-			return err
+		// Store message at tail position
+		itemKey := queueItemKey(queueName, tail)
+		if err := txn.Set(itemKey, []byte(msgID)); err != nil {
+			return fmt.Errorf("failed to store queue item: %w", err)
 		}
 		
-		return txn.Set(key, data)
+		// Update tail position
+		newTail := tail + 1
+		if err := txn.Set(tailKey, uint64ToBytes(newTail)); err != nil {
+			return fmt.Errorf("failed to update tail position: %w", err)
+		}
+		
+		// Initialize head if this is the first item
+		headKey := queueHeadKey(queueName)
+		_, err = txn.Get(headKey)
+		if err == badger.ErrKeyNotFound {
+			if err := txn.Set(headKey, uint64ToBytes(0)); err != nil {
+				return fmt.Errorf("failed to initialize head position: %w", err)
+			}
+		} else if err != nil {
+			return fmt.Errorf("failed to check head position: %w", err)
+		}
+		
+		return nil
 	})
 }
 
-// DequeueMessage removes and returns the first message ID from a queue
+// DequeueMessage removes and returns the first message ID from a queue with O(1) complexity
 func (s *BadgerStore) DequeueMessage(ctx context.Context, queueName string) (string, error) {
 	var msgID string
 	
 	err := s.db.Update(func(txn *badger.Txn) error {
-		key := queueMessagesKey(queueName)
+		// Get current head and tail positions
+		headKey := queueHeadKey(queueName)
+		tailKey := queueTailKey(queueName)
 		
-		// Get current queue
-		var msgIDs []string
-		item, err := txn.Get(key)
-		if err != nil {
-			if err == badger.ErrKeyNotFound {
-				return fmt.Errorf("queue empty")
-			}
-			return err
+		var head, tail uint64
+		
+		// Get head position
+		headItem, err := txn.Get(headKey)
+		if err == badger.ErrKeyNotFound {
+			return fmt.Errorf("queue empty")
+		} else if err != nil {
+			return fmt.Errorf("failed to get head position: %w", err)
 		}
 		
-		err = item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &msgIDs)
+		err = headItem.Value(func(val []byte) error {
+			head = bytesToUint64(val)
+			return nil
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read head position: %w", err)
 		}
 		
-		if len(msgIDs) == 0 {
+		// Get tail position
+		tailItem, err := txn.Get(tailKey)
+		if err == badger.ErrKeyNotFound {
+			return fmt.Errorf("queue empty")
+		} else if err != nil {
+			return fmt.Errorf("failed to get tail position: %w", err)
+		}
+		
+		err = tailItem.Value(func(val []byte) error {
+			tail = bytesToUint64(val)
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to read tail position: %w", err)
+		}
+		
+		// Check if queue is empty
+		if head >= tail {
 			return fmt.Errorf("queue empty")
 		}
 		
-		// Get first message ID
-		msgID = msgIDs[0]
-		msgIDs = msgIDs[1:]
-		
-		// Save updated queue
-		if len(msgIDs) == 0 {
-			return txn.Delete(key)
-		}
-		
-		data, err := json.Marshal(msgIDs)
+		// Get message at head position
+		itemKey := queueItemKey(queueName, head)
+		item, err := txn.Get(itemKey)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get queue item: %w", err)
 		}
 		
-		return txn.Set(key, data)
+		err = item.Value(func(val []byte) error {
+			msgID = string(val)
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to read queue item: %w", err)
+		}
+		
+		// Remove the item and update head position
+		if err := txn.Delete(itemKey); err != nil {
+			return fmt.Errorf("failed to delete queue item: %w", err)
+		}
+		
+		newHead := head + 1
+		if err := txn.Set(headKey, uint64ToBytes(newHead)); err != nil {
+			return fmt.Errorf("failed to update head position: %w", err)
+		}
+		
+		// Clean up head/tail pointers if queue becomes empty
+		if newHead >= tail {
+			if err := txn.Delete(headKey); err != nil {
+				return fmt.Errorf("failed to cleanup head position: %w", err)
+			}
+			if err := txn.Delete(tailKey); err != nil {
+				return fmt.Errorf("failed to cleanup tail position: %w", err)
+			}
+		}
+		
+		return nil
 	})
 	
 	return msgID, err
 }
 
-// PeekQueue returns message IDs from queue without removing them
+// PeekQueue returns message IDs from queue without removing them with O(1) for size check + O(limit) for reading
 func (s *BadgerStore) PeekQueue(ctx context.Context, queueName string, limit int) ([]string, error) {
 	var msgIDs []string
 	
 	err := s.db.View(func(txn *badger.Txn) error {
-		key := queueMessagesKey(queueName)
+		// Get current head and tail positions
+		headKey := queueHeadKey(queueName)
+		tailKey := queueTailKey(queueName)
 		
-		item, err := txn.Get(key)
-		if err != nil {
-			if err == badger.ErrKeyNotFound {
-				return nil // Empty queue
-			}
-			return err
+		var head, tail uint64
+		
+		// Get head position
+		headItem, err := txn.Get(headKey)
+		if err == badger.ErrKeyNotFound {
+			return nil // Empty queue
+		} else if err != nil {
+			return fmt.Errorf("failed to get head position: %w", err)
 		}
 		
-		var allIDs []string
-		err = item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &allIDs)
+		err = headItem.Value(func(val []byte) error {
+			head = bytesToUint64(val)
+			return nil
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read head position: %w", err)
 		}
 		
-		// Return up to limit IDs
-		if limit > 0 && len(allIDs) > limit {
-			msgIDs = allIDs[:limit]
-		} else {
-			msgIDs = allIDs
+		// Get tail position
+		tailItem, err := txn.Get(tailKey)
+		if err == badger.ErrKeyNotFound {
+			return nil // Empty queue
+		} else if err != nil {
+			return fmt.Errorf("failed to get tail position: %w", err)
+		}
+		
+		err = tailItem.Value(func(val []byte) error {
+			tail = bytesToUint64(val)
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to read tail position: %w", err)
+		}
+		
+		// Check if queue is empty
+		if head >= tail {
+			return nil // Empty queue
+		}
+		
+		// Calculate how many messages to read
+		queueSize := int(tail - head)
+		readCount := queueSize
+		if limit > 0 && limit < queueSize {
+			readCount = limit
+		}
+		
+		// Read messages from head position
+		msgIDs = make([]string, readCount)
+		for i := 0; i < readCount; i++ {
+			itemKey := queueItemKey(queueName, head+uint64(i))
+			item, err := txn.Get(itemKey)
+			if err != nil {
+				return fmt.Errorf("failed to get queue item at position %d: %w", head+uint64(i), err)
+			}
+			
+			err = item.Value(func(val []byte) error {
+				msgIDs[i] = string(val)
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("failed to read queue item at position %d: %w", head+uint64(i), err)
+			}
 		}
 		
 		return nil
@@ -429,30 +649,54 @@ func (s *BadgerStore) PeekQueue(ctx context.Context, queueName string, limit int
 	return msgIDs, err
 }
 
-// GetQueueSize returns the number of messages in a queue
+// GetQueueSize returns the number of messages in a queue with O(1) complexity
 func (s *BadgerStore) GetQueueSize(ctx context.Context, queueName string) (int64, error) {
 	var size int64
 	
 	err := s.db.View(func(txn *badger.Txn) error {
-		key := queueMessagesKey(queueName)
+		// Get current head and tail positions
+		headKey := queueHeadKey(queueName)
+		tailKey := queueTailKey(queueName)
 		
-		item, err := txn.Get(key)
-		if err != nil {
-			if err == badger.ErrKeyNotFound {
-				return nil // Empty queue
-			}
-			return err
+		var head, tail uint64
+		
+		// Get head position
+		headItem, err := txn.Get(headKey)
+		if err == badger.ErrKeyNotFound {
+			return nil // Empty queue
+		} else if err != nil {
+			return fmt.Errorf("failed to get head position: %w", err)
 		}
 		
-		var msgIDs []string
-		err = item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &msgIDs)
+		err = headItem.Value(func(val []byte) error {
+			head = bytesToUint64(val)
+			return nil
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read head position: %w", err)
 		}
 		
-		size = int64(len(msgIDs))
+		// Get tail position
+		tailItem, err := txn.Get(tailKey)
+		if err == badger.ErrKeyNotFound {
+			return nil // Empty queue
+		} else if err != nil {
+			return fmt.Errorf("failed to get tail position: %w", err)
+		}
+		
+		err = tailItem.Value(func(val []byte) error {
+			tail = bytesToUint64(val)
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to read tail position: %w", err)
+		}
+		
+		// Calculate queue size
+		if tail > head {
+			size = int64(tail - head)
+		}
+		
 		return nil
 	})
 	
@@ -682,12 +926,67 @@ func (s *BadgerStore) UpdateQueue(ctx context.Context, queue *types.Queue) error
 func (s *BadgerStore) DeleteQueue(ctx context.Context, name string) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		// Delete queue metadata
-		if err := txn.Delete(queueKey(name)); err != nil {
-			return err
+		if err := txn.Delete(queueKey(name)); err != nil && err != badger.ErrKeyNotFound {
+			return fmt.Errorf("failed to delete queue metadata: %w", err)
 		}
 		
-		// Delete queue messages
-		return txn.Delete(queueMessagesKey(name))
+		// Delete legacy queue messages (for backward compatibility)
+		if err := txn.Delete(queueMessagesKey(name)); err != nil && err != badger.ErrKeyNotFound {
+			return fmt.Errorf("failed to delete legacy queue messages: %w", err)
+		}
+		
+		// Delete new queue structure: head, tail, and all items
+		headKey := queueHeadKey(name)
+		tailKey := queueTailKey(name)
+		
+		var head, tail uint64
+		
+		// Get head and tail positions to know what to delete
+		headItem, err := txn.Get(headKey)
+		if err != nil && err != badger.ErrKeyNotFound {
+			return fmt.Errorf("failed to get head position: %w", err)
+		}
+		if err == nil {
+			err = headItem.Value(func(val []byte) error {
+				head = bytesToUint64(val)
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("failed to read head position: %w", err)
+			}
+		}
+		
+		tailItem, err := txn.Get(tailKey)
+		if err != nil && err != badger.ErrKeyNotFound {
+			return fmt.Errorf("failed to get tail position: %w", err)
+		}
+		if err == nil {
+			err = tailItem.Value(func(val []byte) error {
+				tail = bytesToUint64(val)
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("failed to read tail position: %w", err)
+			}
+			
+			// Delete all queue items
+			for seq := head; seq < tail; seq++ {
+				itemKey := queueItemKey(name, seq)
+				if err := txn.Delete(itemKey); err != nil && err != badger.ErrKeyNotFound {
+					return fmt.Errorf("failed to delete queue item %d: %w", seq, err)
+				}
+			}
+		}
+		
+		// Delete head and tail keys
+		if err := txn.Delete(headKey); err != nil && err != badger.ErrKeyNotFound {
+			return fmt.Errorf("failed to delete head key: %w", err)
+		}
+		if err := txn.Delete(tailKey); err != nil && err != badger.ErrKeyNotFound {
+			return fmt.Errorf("failed to delete tail key: %w", err)
+		}
+		
+		return nil
 	})
 }
 
@@ -869,77 +1168,126 @@ func (t *badgerTransaction) DeleteMessage(id string) error {
 }
 
 func (t *badgerTransaction) EnqueueMessage(queueName string, msgID string) error {
-	key := queueMessagesKey(queueName)
+	// Get current tail position
+	tailKey := queueTailKey(queueName)
+	var tail uint64 = 0
 	
-	// Get current queue
-	var msgIDs []string
-	item, err := t.txn.Get(key)
-	if err != nil && err != badger.ErrKeyNotFound {
-		return err
-	}
-	
+	item, err := t.txn.Get(tailKey)
 	if err == nil {
 		err = item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &msgIDs)
+			tail = bytesToUint64(val)
+			return nil
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read tail position: %w", err)
 		}
+	} else if err != badger.ErrKeyNotFound {
+		return fmt.Errorf("failed to get tail position: %w", err)
 	}
 	
-	// Append message ID
-	msgIDs = append(msgIDs, msgID)
-	
-	// Save updated queue
-	data, err := json.Marshal(msgIDs)
-	if err != nil {
-		return err
+	// Store message at tail position
+	itemKey := queueItemKey(queueName, tail)
+	if err := t.txn.Set(itemKey, []byte(msgID)); err != nil {
+		return fmt.Errorf("failed to store queue item: %w", err)
 	}
 	
-	return t.txn.Set(key, data)
+	// Update tail position
+	newTail := tail + 1
+	if err := t.txn.Set(tailKey, uint64ToBytes(newTail)); err != nil {
+		return fmt.Errorf("failed to update tail position: %w", err)
+	}
+	
+	// Initialize head if this is the first item
+	headKey := queueHeadKey(queueName)
+	_, err = t.txn.Get(headKey)
+	if err == badger.ErrKeyNotFound {
+		if err := t.txn.Set(headKey, uint64ToBytes(0)); err != nil {
+			return fmt.Errorf("failed to initialize head position: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("failed to check head position: %w", err)
+	}
+	
+	return nil
 }
 
 func (t *badgerTransaction) DequeueMessage(queueName string) (string, error) {
-	key := queueMessagesKey(queueName)
+	// Get current head and tail positions
+	headKey := queueHeadKey(queueName)
+	tailKey := queueTailKey(queueName)
 	
-	// Get current queue
-	var msgIDs []string
-	item, err := t.txn.Get(key)
-	if err != nil {
-		if err == badger.ErrKeyNotFound {
-			return "", fmt.Errorf("queue empty")
-		}
-		return "", err
+	var head, tail uint64
+	
+	// Get head position
+	headItem, err := t.txn.Get(headKey)
+	if err == badger.ErrKeyNotFound {
+		return "", fmt.Errorf("queue empty")
+	} else if err != nil {
+		return "", fmt.Errorf("failed to get head position: %w", err)
 	}
 	
-	err = item.Value(func(val []byte) error {
-		return json.Unmarshal(val, &msgIDs)
+	err = headItem.Value(func(val []byte) error {
+		head = bytesToUint64(val)
+		return nil
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read head position: %w", err)
 	}
 	
-	if len(msgIDs) == 0 {
+	// Get tail position
+	tailItem, err := t.txn.Get(tailKey)
+	if err == badger.ErrKeyNotFound {
+		return "", fmt.Errorf("queue empty")
+	} else if err != nil {
+		return "", fmt.Errorf("failed to get tail position: %w", err)
+	}
+	
+	err = tailItem.Value(func(val []byte) error {
+		tail = bytesToUint64(val)
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to read tail position: %w", err)
+	}
+	
+	// Check if queue is empty
+	if head >= tail {
 		return "", fmt.Errorf("queue empty")
 	}
 	
-	// Get first message ID
-	msgID := msgIDs[0]
-	msgIDs = msgIDs[1:]
+	// Get message at head position
+	itemKey := queueItemKey(queueName, head)
+	item, err := t.txn.Get(itemKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to get queue item: %w", err)
+	}
 	
-	// Save updated queue
-	if len(msgIDs) == 0 {
-		if err := t.txn.Delete(key); err != nil {
-			return "", err
+	var msgID string
+	err = item.Value(func(val []byte) error {
+		msgID = string(val)
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to read queue item: %w", err)
+	}
+	
+	// Remove the item and update head position
+	if err := t.txn.Delete(itemKey); err != nil {
+		return "", fmt.Errorf("failed to delete queue item: %w", err)
+	}
+	
+	newHead := head + 1
+	if err := t.txn.Set(headKey, uint64ToBytes(newHead)); err != nil {
+		return "", fmt.Errorf("failed to update head position: %w", err)
+	}
+	
+	// Clean up head/tail pointers if queue becomes empty
+	if newHead >= tail {
+		if err := t.txn.Delete(headKey); err != nil {
+			return "", fmt.Errorf("failed to cleanup head position: %w", err)
 		}
-	} else {
-		data, err := json.Marshal(msgIDs)
-		if err != nil {
-			return "", err
-		}
-		
-		if err := t.txn.Set(key, data); err != nil {
-			return "", err
+		if err := t.txn.Delete(tailKey); err != nil {
+			return "", fmt.Errorf("failed to cleanup tail position: %w", err)
 		}
 	}
 	

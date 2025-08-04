@@ -1,0 +1,16 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.prometheus.rules.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "amq.fullname" . }}
+  labels:
+    {{- include "amq.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.prometheus.rules.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with .Values.monitoring.prometheus.rules.groups }}
+  groups:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,304 @@
+syntax = "proto3";
+
+package amq.v1;
+
+option go_package = "github.com/rizome-dev/amq/api/proto;amqpb";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+
+// AMQ service provides high-performance message queue operations for agents
+service AMQ {
+  // Client management
+  rpc RegisterClient(RegisterClientRequest) returns (RegisterClientResponse);
+  rpc UnregisterClient(UnregisterClientRequest) returns (google.protobuf.Empty);
+  rpc Heartbeat(HeartbeatRequest) returns (google.protobuf.Empty);
+  
+  // Queue management
+  rpc CreateQueue(CreateQueueRequest) returns (CreateQueueResponse);
+  rpc DeleteQueue(DeleteQueueRequest) returns (google.protobuf.Empty);
+  rpc ListQueues(ListQueuesRequest) returns (ListQueuesResponse);
+  rpc GetQueueStats(GetQueueStatsRequest) returns (GetQueueStatsResponse);
+  
+  // Subscription management
+  rpc Subscribe(SubscribeRequest) returns (google.protobuf.Empty);
+  rpc Unsubscribe(UnsubscribeRequest) returns (google.protobuf.Empty);
+  
+  // Message operations
+  rpc SubmitTask(SubmitTaskRequest) returns (SubmitTaskResponse);
+  rpc SendDirect(SendDirectRequest) returns (SendDirectResponse);
+  rpc ReceiveMessages(ReceiveMessagesRequest) returns (stream Message);
+  rpc AckMessage(AckMessageRequest) returns (google.protobuf.Empty);
+  rpc NackMessage(NackMessageRequest) returns (google.protobuf.Empty);
+  
+  // Batch operations for performance
+  rpc SubmitTaskBatch(SubmitTaskBatchRequest) returns (SubmitTaskBatchResponse);
+  rpc AckMessageBatch(AckMessageBatchRequest) returns (google.protobuf.Empty);
+  
+  // Monitoring
+  rpc GetClientInfo(GetClientInfoRequest) returns (ClientInfo);
+  rpc ListClients(ListClientsRequest) returns (ListClientsResponse);
+  rpc GetMetrics(GetMetricsRequest) returns (MetricsResponse);
+}
+
+// Common enums
+enum QueueType {
+  QUEUE_TYPE_UNSPECIFIED = 0;
+  QUEUE_TYPE_TASK = 1;
+  QUEUE_TYPE_DIRECT = 2;
+}
+
+enum MessageStatus {
+  MESSAGE_STATUS_UNSPECIFIED = 0;
+  MESSAGE_STATUS_PENDING = 1;
+  MESSAGE_STATUS_DELIVERED = 2;
+  MESSAGE_STATUS_ACKNOWLEDGED = 3;
+  MESSAGE_STATUS_FAILED = 4;
+  MESSAGE_STATUS_EXPIRED = 5;
+}
+
+// Client management messages
+message RegisterClientRequest {
+  string client_id = 1;
+  map<string, string> metadata = 2;
+  ClientCapabilities capabilities = 3;
+}
+
+message ClientCapabilities {
+  int32 max_concurrent_messages = 1;
+  repeated string supported_encodings = 2;
+  bool supports_batch = 3;
+  int32 prefetch_count = 4;
+}
+
+message RegisterClientResponse {
+  string session_id = 1;
+  google.protobuf.Timestamp registered_at = 2;
+}
+
+message UnregisterClientRequest {
+  string client_id = 1;
+}
+
+message HeartbeatRequest {
+  string client_id = 1;
+  map<string, double> metrics = 2; // CPU usage, memory, etc
+}
+
+// Queue management messages
+message CreateQueueRequest {
+  string name = 1;
+  QueueType type = 2;
+  QueueConfig config = 3;
+}
+
+message QueueConfig {
+  int32 max_depth = 1;
+  google.protobuf.Duration message_ttl = 2;
+  int32 max_retries = 3;
+  bool enable_dead_letter = 4;
+  string dead_letter_queue = 5;
+}
+
+message CreateQueueResponse {
+  string queue_id = 1;
+  google.protobuf.Timestamp created_at = 2;
+}
+
+message DeleteQueueRequest {
+  string name = 1;
+  bool force = 2; // Delete even if not empty
+}
+
+message ListQueuesRequest {
+  string filter = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListQueuesResponse {
+  repeated QueueInfo queues = 1;
+  string next_page_token = 2;
+}
+
+message QueueInfo {
+  string name = 1;
+  QueueType type = 2;
+  int64 message_count = 3;
+  int32 subscriber_count = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message GetQueueStatsRequest {
+  string queue_name = 1;
+}
+
+message GetQueueStatsResponse {
+  int64 message_count = 1;
+  int64 messages_in_flight = 2;
+  int32 subscriber_count = 3;
+  double enqueue_rate = 4; // messages per second
+  double dequeue_rate = 5; // messages per second
+  int64 total_enqueued = 6;
+  int64 total_dequeued = 7;
+  int64 total_acked = 8;
+  google.protobuf.Timestamp oldest_message = 9;
+}
+
+// Subscription management
+message SubscribeRequest {
+  string client_id = 1;
+  repeated string topics = 2;
+  SubscriptionOptions options = 3;
+}
+
+message SubscriptionOptions {
+  int32 priority = 1; // Higher priority clients get messages first
+  string filter_expression = 2; // Optional message filter
+  bool exclusive = 3; // Only one client receives each message
+}
+
+message UnsubscribeRequest {
+  string client_id = 1;
+  repeated string topics = 2;
+}
+
+// Message operations
+message SubmitTaskRequest {
+  string client_id = 1;
+  string topic = 2;
+  bytes payload = 3;
+  MessageOptions options = 4;
+}
+
+message MessageOptions {
+  int32 priority = 1; // 0-9, higher is more important
+  google.protobuf.Duration ttl = 2;
+  int32 max_retries = 3;
+  map<string, string> metadata = 4;
+  string correlation_id = 5;
+  string reply_to = 6;
+}
+
+message SubmitTaskResponse {
+  string message_id = 1;
+  google.protobuf.Timestamp submitted_at = 2;
+}
+
+message SubmitTaskBatchRequest {
+  string client_id = 1;
+  repeated TaskItem items = 2;
+}
+
+message TaskItem {
+  string topic = 1;
+  bytes payload = 2;
+  MessageOptions options = 3;
+}
+
+message SubmitTaskBatchResponse {
+  repeated TaskResult results = 1;
+}
+
+message TaskResult {
+  string message_id = 1;
+  bool success = 2;
+  string error = 3;
+}
+
+message SendDirectRequest {
+  string from_client_id = 1;
+  string to_client_id = 2;
+  bytes payload = 3;
+  MessageOptions options = 4;
+}
+
+message SendDirectResponse {
+  string message_id = 1;
+  google.protobuf.Timestamp sent_at = 2;
+}
+
+message ReceiveMessagesRequest {
+  string client_id = 1;
+  int32 max_messages = 2;
+  google.protobuf.Duration wait_time = 3; // Long polling
+  bool auto_ack = 4;
+}
+
+message Message {
+  string id = 1;
+  string from_client_id = 2;
+  string topic = 3;
+  bytes payload = 4;
+  MessageStatus status = 5;
+  int32 priority = 6;
+  int32 retry_count = 7;
+  map<string, string> metadata = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp expires_at = 10;
+  string correlation_id = 11;
+  string reply_to = 12;
+}
+
+message AckMessageRequest {
+  string client_id = 1;
+  string message_id = 2;
+}
+
+message AckMessageBatchRequest {
+  string client_id = 1;
+  repeated string message_ids = 2;
+}
+
+message NackMessageRequest {
+  string client_id = 1;
+  string message_id = 2;
+  bool requeue = 3;
+  string reason = 4;
+}
+
+// Client info
+message ClientInfo {
+  string id = 1;
+  map<string, string> metadata = 2;
+  google.protobuf.Timestamp registered_at = 3;
+  google.protobuf.Timestamp last_seen = 4;
+  repeated string subscriptions = 5;
+  int64 messages_sent = 6;
+  int64 messages_received = 7;
+  ClientCapabilities capabilities = 8;
+}
+
+message GetClientInfoRequest {
+  string client_id = 1;
+}
+
+message ListClientsRequest {
+  map<string, string> filter_metadata = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListClientsResponse {
+  repeated ClientInfo clients = 1;
+  string next_page_token = 2;
+}
+
+// Monitoring
+message GetMetricsRequest {
+  repeated string metric_names = 1;
+}
+
+message MetricsResponse {
+  map<string, MetricValue> metrics = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+message MetricValue {
+  oneof value {
+    int64 int_value = 1;
+    double double_value = 2;
+    string string_value = 3;
+  }
+}

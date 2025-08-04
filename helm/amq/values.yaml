@@ -1,31 +1,54 @@
-# Default values for amq.
+# Default values for AMQ - Production-grade message queue for AI agents
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
 
+# Global settings
+global:
+  # -- Override the deployment namespace
+  namespaceOverride: ""
+  
+# -- Number of AMQ replicas
 replicaCount: 3
+
+# -- Update strategy
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
 
 image:
   repository: rizome/amq
   pullPolicy: IfNotPresent
-  tag: ""  # Overrides the image tag whose default is the chart appVersion
+  # -- Overrides the image tag whose default is the chart appVersion
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
 serviceAccount:
-  # Specifies whether a service account should be created
+  # -- Specifies whether a service account should be created
   create: true
-  # Annotations to add to the service account
+  # -- Annotations to add to the service account
   annotations: {}
-  # The name of the service account to use
+  # -- The name of the service account to use
   name: ""
 
-podAnnotations: {}
+# -- Pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
 
+# -- Pod security context
 podSecurityContext:
   fsGroup: 1000
   runAsUser: 1000
   runAsNonRoot: true
+  fsGroupChangePolicy: "OnRootMismatch"
 
+# -- Container security context
 securityContext:
   capabilities:
     drop:
@@ -33,52 +56,180 @@ securityContext:
   readOnlyRootFilesystem: true
   runAsNonRoot: true
   runAsUser: 1000
+  allowPrivilegeEscalation: false
 
+# Service configuration
 service:
   type: ClusterIP
-  port: 8080
   annotations: {}
+  # -- HTTP API port
+  http:
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  # -- gRPC API port
+  grpc:
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  # -- Metrics port (if separate from HTTP)
+  metrics:
+    enabled: false
+    port: 9091
+    targetPort: 9091
 
 # AMQ Configuration
 config:
+  # -- Storage path for BadgerDB
   storePath: "/data/amq"
-  workerPoolSize: 10
+  # -- Number of worker threads per queue
+  workerPoolSize: 50
+  # -- Agent heartbeat interval
   heartbeatInterval: "30s"
+  # -- Default message processing timeout
   messageTimeout: "5m"
+  # -- Maximum message size (bytes)
+  maxMessageSize: 10485760  # 10MB
+  # -- Message retention period (seconds)
+  retentionPeriod: 604800  # 7 days
+  # -- Log level (debug, info, warn, error)
   logLevel: "info"
+  # -- Enable structured JSON logging
+  jsonLogs: true
+  
+  # API settings
+  api:
+    # -- Enable HTTP API
+    httpEnabled: true
+    # -- Enable gRPC API
+    grpcEnabled: true
+    # -- Request timeout
+    requestTimeout: "30s"
+    # -- Maximum concurrent requests
+    maxConcurrentRequests: 1000
+    
+  # Queue settings
+  queue:
+    # -- Default queue depth limit
+    defaultMaxDepth: 1000000
+    # -- Default retry limit
+    defaultMaxRetries: 3
+    # -- Enable dead letter queues
+    enableDeadLetter: true
+    
+  # Performance tuning
+  performance:
+    # -- Enable message batching
+    batchingEnabled: true
+    # -- Batch size
+    batchSize: 100
+    # -- Batch timeout
+    batchTimeout: "100ms"
+    # -- Enable connection pooling
+    connectionPooling: true
+    # -- Connection pool size
+    connectionPoolSize: 100
+
+# TLS configuration
+tls:
+  # -- Enable TLS
+  enabled: false
+  # -- TLS mode (simple, mutual)
+  mode: "simple"
+  # -- Use cert-manager for certificate management
+  certManager:
+    enabled: false
+    issuer: "letsencrypt-prod"
+  # -- Manual TLS configuration
+  manual:
+    # -- Base64 encoded server certificate
+    serverCert: ""
+    # -- Base64 encoded server key
+    serverKey: ""
+    # -- Base64 encoded CA certificate (for mutual TLS)
+    caCert: ""
+
+# Authentication & Authorization
+auth:
+  # -- Enable authentication
+  enabled: false
+  # -- Authentication type (token, oauth2, mtls)
+  type: "token"
+  # -- Static auth tokens (for testing only)
+  staticTokens: []
+  # -- OAuth2 configuration
+  oauth2:
+    issuer: ""
+    audience: ""
+    jwksUri: ""
 
 # Persistence configuration
 persistence:
+  # -- Enable persistence
   enabled: true
-  storageClass: ""  # Use default storage class if not specified
+  # -- Storage class name
+  storageClass: ""
+  # -- Access mode
   accessMode: ReadWriteOnce
-  size: 10Gi
+  # -- Storage size
+  size: 100Gi
+  # -- PVC annotations
   annotations: {}
+  # -- Existing PVC name
+  existingClaim: ""
+  # -- Volume snapshot for backup
+  volumeSnapshot:
+    enabled: false
+    className: ""
+    schedule: "0 2 * * *"
 
 # Resource limits and requests
 resources:
   limits:
-    cpu: 1000m
-    memory: 2Gi
+    cpu: 4000m
+    memory: 16Gi
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 2000m
+    memory: 8Gi
+
+# Java heap settings (if using JVM-based components)
+jvmHeap:
+  min: "4g"
+  max: "12g"
 
 # Autoscaling configuration
 autoscaling:
-  enabled: false
+  # -- Enable horizontal pod autoscaling
+  enabled: true
   minReplicas: 3
   maxReplicas: 10
-  targetCPUUtilizationPercentage: 80
+  # -- Target CPU utilization percentage
+  targetCPUUtilizationPercentage: 70
+  # -- Target memory utilization percentage
   targetMemoryUtilizationPercentage: 80
+  # -- Custom metrics for scaling
+  customMetrics:
+    - type: Pods
+      pods:
+        metric:
+          name: amq_queue_depth
+        target:
+          type: AverageValue
+          averageValue: "10000"
 
-# Node selector for pod assignment
+# -- Node selector for pod assignment
 nodeSelector: {}
+  # disktype: ssd
+  # node-role.kubernetes.io/compute: "true"
 
-# Tolerations for pod assignment
+# -- Tolerations for pod assignment
 tolerations: []
+# - key: "amq"
+#   operator: "Equal"
+#   value: "true"
+#   effect: "NoSchedule"
 
-# Affinity rules for pod assignment
+# -- Affinity rules for pod assignment
 affinity:
   podAntiAffinity:
     preferredDuringSchedulingIgnoredDuringExecution:
@@ -91,65 +242,268 @@ affinity:
             values:
             - amq
         topologyKey: kubernetes.io/hostname
+  # Optionally require AMQ pods to run in specific zones
+  # nodeAffinity:
+  #   requiredDuringSchedulingIgnoredDuringExecution:
+  #     nodeSelectorTerms:
+  #     - matchExpressions:
+  #       - key: topology.kubernetes.io/zone
+  #         operator: In
+  #         values:
+  #         - us-east-1a
+  #         - us-east-1b
+  #         - us-east-1c
+
+# -- Topology spread constraints
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: amq
 
 # Probes configuration
 livenessProbe:
   httpGet:
     path: /health
     port: http
-  initialDelaySeconds: 30
+    scheme: HTTP
+  initialDelaySeconds: 60
   periodSeconds: 10
   timeoutSeconds: 5
+  successThreshold: 1
   failureThreshold: 3
 
 readinessProbe:
   httpGet:
     path: /ready
     port: http
-  initialDelaySeconds: 5
+    scheme: HTTP
+  initialDelaySeconds: 10
   periodSeconds: 5
   timeoutSeconds: 3
+  successThreshold: 1
   failureThreshold: 3
 
-# Monitoring
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+    scheme: HTTP
+  initialDelaySeconds: 0
+  periodSeconds: 10
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 30
+
+# Monitoring & Observability
 monitoring:
-  enabled: false
-  serviceMonitor:
+  # -- Enable monitoring
+  enabled: true
+  
+  # Prometheus configuration
+  prometheus:
+    # -- Enable ServiceMonitor creation
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+      scrapeTimeout: 10s
+      path: /metrics
+      # -- Additional labels for ServiceMonitor
+      labels:
+        prometheus: kube-prometheus
+      # -- MetricRelabelings to apply
+      metricRelabelings: []
+      # -- RelabelConfigs to apply
+      relabelings: []
+    
+    # -- PrometheusRule for alerting
+    rules:
+      enabled: true
+      # -- Additional labels for PrometheusRule
+      labels:
+        prometheus: kube-prometheus
+      # -- Alert rules
+      groups:
+        - name: amq.rules
+          interval: 30s
+          rules:
+            - alert: AMQHighQueueDepth
+              expr: amq_queue_depth > 50000
+              for: 5m
+              labels:
+                severity: warning
+              annotations:
+                summary: "AMQ queue {{ $labels.queue }} has high depth"
+                description: "Queue {{ $labels.queue }} has {{ $value }} messages"
+            
+            - alert: AMQHighErrorRate
+              expr: rate(amq_errors_total[5m]) > 0.01
+              for: 5m
+              labels:
+                severity: critical
+              annotations:
+                summary: "AMQ error rate is high"
+                description: "Error rate is {{ $value }} errors per second"
+  
+  # Grafana dashboards
+  grafana:
+    # -- Enable dashboard ConfigMap creation
+    dashboards:
+      enabled: true
+      # -- Labels for dashboard ConfigMaps
+      labels:
+        grafana_dashboard: "1"
+  
+  # OpenTelemetry configuration
+  opentelemetry:
+    # -- Enable OpenTelemetry
     enabled: false
-    interval: 30s
-    path: /metrics
-    labels: {}
+    # -- OTLP endpoint
+    endpoint: "otel-collector:4317"
+    # -- Enable tracing
+    tracingEnabled: true
+    # -- Sampling rate (0.0 to 1.0)
+    samplingRate: 0.1
 
 # Network policies
 networkPolicy:
-  enabled: false
+  # -- Enable NetworkPolicy
+  enabled: true
+  # -- Ingress rules
   ingress:
     - from:
+      # Allow from pods with specific label
       - podSelector:
           matchLabels:
             amq-client: "true"
+      # Allow from specific namespaces
+      - namespaceSelector:
+          matchLabels:
+            name: amq-clients
       ports:
       - protocol: TCP
         port: 8080
+      - protocol: TCP
+        port: 9090
+  # -- Egress rules
+  egress:
+    # Allow DNS
+    - to:
+      - namespaceSelector: {}
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+      ports:
+      - protocol: UDP
+        port: 53
+    # Allow access to storage systems
+    - to:
+      - podSelector: {}
+      ports:
+      - protocol: TCP
 
 # Pod disruption budget
 podDisruptionBudget:
+  # -- Enable PodDisruptionBudget
   enabled: true
+  # -- Minimum available pods
   minAvailable: 2
+  # -- Maximum unavailable pods (alternative to minAvailable)
+  # maxUnavailable: 1
 
-# Extra environment variables
+# Backup configuration
+backup:
+  # -- Enable backup CronJob
+  enabled: false
+  # -- Backup schedule
+  schedule: "0 2 * * *"
+  # -- S3 bucket for backups
+  s3:
+    bucket: ""
+    region: "us-east-1"
+    endpoint: ""
+    accessKeyId: ""
+    secretAccessKey: ""
+  # -- Retention days
+  retentionDays: 30
+
+# Extra configuration
+# -- Extra environment variables
 extraEnvVars: []
-# - name: EXTRA_VAR
-#   value: "extra-value"
+# - name: JAEGER_AGENT_HOST
+#   value: "jaeger-agent.observability"
 
-# Extra volumes
+# -- Extra environment variables from ConfigMaps or Secrets
+extraEnvFrom: []
+# - configMapRef:
+#     name: special-config
+# - secretRef:
+#     name: special-secret
+
+# -- Extra volumes
 extraVolumes: []
-# - name: extra-volume
+# - name: custom-config
 #   configMap:
-#     name: extra-configmap
+#     name: custom-config
 
-# Extra volume mounts
+# -- Extra volume mounts
 extraVolumeMounts: []
-# - name: extra-volume
-#   mountPath: /extra
+# - name: custom-config
+#   mountPath: /etc/custom
 #   readOnly: true
+
+# -- Extra containers
+extraContainers: []
+# - name: oauth-proxy
+#   image: quay.io/oauth2-proxy/oauth2-proxy:latest
+#   ports:
+#   - containerPort: 4180
+#     name: oauth-proxy
+
+# -- Init containers
+initContainers: []
+# - name: init-sysctl
+#   image: busybox:latest
+#   command: ['sh', '-c', 'sysctl -w vm.max_map_count=262144']
+#   securityContext:
+#     privileged: true
+
+# -- Additional pod labels
+podLabels: {}
+
+# -- Priority class name
+priorityClassName: ""
+
+# -- Runtime class name
+runtimeClassName: ""
+
+# -- Scheduler name
+schedulerName: ""
+
+# -- Host aliases
+hostAliases: []
+# - ip: "127.0.0.1"
+#   hostnames:
+#   - "foo.local"
+
+# -- DNS policy
+dnsPolicy: ClusterFirst
+
+# -- DNS config
+dnsConfig: {}
+#   nameservers:
+#     - 1.2.3.4
+#   searches:
+#     - ns1.svc.cluster-domain.example
+#     - my.dns.search.suffix
+
+# -- Termination grace period (seconds)
+terminationGracePeriodSeconds: 60
+
+# -- Lifecycle hooks
+lifecycle: {}
+#   preStop:
+#     exec:
+#       command: ["/bin/sh", "-c", "sleep 15"]

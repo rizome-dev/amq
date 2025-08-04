@@ -9,17 +9,18 @@ GOFMT=gofmt
 GOLINT=golangci-lint
 
 # Build variables
-BINARY_NAME=amq
+BINARY_NAME=amq-server
 BINARY_UNIX=$(BINARY_NAME)_unix
 BUILD_DIR=./build
 COVERAGE_DIR=./coverage
+PROTO_DIR=./api/proto
 
 # Shared library names
 SHAREDLIB_DARWIN_ARM64=signer-arm64.dylib
 SHAREDLIB_LINUX_AMD64=signer-amd64.so
 
 # Source files
-MAIN_SOURCE=./cmd/$(BINARY_NAME)/main.go
+MAIN_SOURCE=./cmd/amq-server/main.go
 SHAREDLIB_SOURCE=./sharedlib/sharedlib.go
 
 # Git info
@@ -30,7 +31,7 @@ BUILD_DATE=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Build flags
 LDFLAGS=-ldflags "-X main.Version=$(GIT_TAG) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildDate=$(BUILD_DATE)"
 
-.PHONY: all build clean test coverage lint fmt vet vendor help sharedlib-darwin sharedlib-linux sharedlib-all setup
+.PHONY: all build clean test coverage lint fmt vet vendor help sharedlib-darwin sharedlib-linux sharedlib-all setup proto
 
 # Default target
 all: test build
@@ -49,6 +50,8 @@ setup:
 	@$(GOCMD) install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 	@$(GOCMD) install golang.org/x/tools/cmd/goimports@latest
 	@$(GOCMD) install github.com/securego/gosec/v2/cmd/gosec@latest
+	@$(GOCMD) install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+	@$(GOCMD) install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 	@echo "Setup complete!"
 
 ## build: Build the binary
@@ -182,8 +185,15 @@ run: build
 docker-build:
 	@docker build -t $(BINARY_NAME):$(GIT_TAG) .
 
+## proto: Generate protobuf code
+proto:
+	@echo "Generating protobuf code..."
+	@protoc --go_out=. --go_opt=paths=source_relative \
+		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+		$(PROTO_DIR)/amq.proto
+
 ## ci: Run CI pipeline locally
-ci: vendor lint vet test
+ci: vendor proto lint vet test
 
 ## release: Create a new release
 release: clean vendor lint vet test build-cross

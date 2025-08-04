@@ -10,6 +10,11 @@ spec:
   selector:
     matchLabels:
       {{- include "amq.selectorLabels" . | nindent 6 }}
+  {{- with .Values.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  podManagementPolicy: Parallel
   template:
     metadata:
       annotations:
@@ -19,6 +24,9 @@ spec:
         {{- end }}
       labels:
         {{- include "amq.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -27,6 +35,20 @@ spec:
       serviceAccountName: {{ include "amq.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- end }}
+      {{- if .Values.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
@@ -35,16 +57,46 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
-              containerPort: {{ .Values.service.port }}
+              containerPort: {{ .Values.service.http.targetPort }}
               protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.service.grpc.targetPort }}
+              protocol: TCP
+            {{- if .Values.service.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.service.metrics.targetPort }}
+              protocol: TCP
+            {{- end }}
+          {{- if .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml .Values.startupProbe | nindent 12 }}
+          {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- with .Values.lifecycle }}
+          lifecycle:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           env:
-            - name: AMQ_STORE_PATH
+            # Pod information
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            # Core configuration
+            - name: AMQ_STORAGE_PATH
               value: {{ .Values.config.storePath | quote }}
             - name: AMQ_WORKER_POOL_SIZE
               value: {{ .Values.config.workerPoolSize | quote }}
@@ -52,36 +104,122 @@ spec:
               value: {{ .Values.config.heartbeatInterval | quote }}
             - name: AMQ_MESSAGE_TIMEOUT
               value: {{ .Values.config.messageTimeout | quote }}
+            - name: AMQ_MAX_MESSAGE_SIZE
+              value: {{ .Values.config.maxMessageSize | quote }}
+            - name: AMQ_RETENTION_PERIOD
+              value: {{ .Values.config.retentionPeriod | quote }}
             - name: AMQ_LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
-            - name: AMQ_POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: AMQ_POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: AMQ_POD_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.podIP
+            - name: AMQ_JSON_LOGS
+              value: {{ .Values.config.jsonLogs | quote }}
+            # API configuration
+            - name: AMQ_HTTP_ENABLED
+              value: {{ .Values.config.api.httpEnabled | quote }}
+            - name: AMQ_GRPC_ENABLED
+              value: {{ .Values.config.api.grpcEnabled | quote }}
+            - name: AMQ_HTTP_PORT
+              value: {{ .Values.service.http.targetPort | quote }}
+            - name: AMQ_GRPC_PORT
+              value: {{ .Values.service.grpc.targetPort | quote }}
+            # Performance tuning
+            {{- if .Values.config.performance.batchingEnabled }}
+            - name: AMQ_BATCHING_ENABLED
+              value: "true"
+            - name: AMQ_BATCH_SIZE
+              value: {{ .Values.config.performance.batchSize | quote }}
+            - name: AMQ_BATCH_TIMEOUT
+              value: {{ .Values.config.performance.batchTimeout | quote }}
+            {{- end }}
+            {{- if .Values.config.performance.connectionPooling }}
+            - name: AMQ_CONNECTION_POOLING
+              value: "true"
+            - name: AMQ_CONNECTION_POOL_SIZE
+              value: {{ .Values.config.performance.connectionPoolSize | quote }}
+            {{- end }}
+            # Monitoring
+            {{- if .Values.monitoring.enabled }}
+            - name: AMQ_METRICS_ENABLED
+              value: "true"
+            {{- if .Values.monitoring.opentelemetry.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.monitoring.opentelemetry.endpoint | quote }}
+            - name: OTEL_TRACES_ENABLED
+              value: {{ .Values.monitoring.opentelemetry.tracingEnabled | quote }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ .Values.monitoring.opentelemetry.samplingRate | quote }}
+            {{- end }}
+            {{- end }}
+            # TLS configuration
+            {{- if .Values.tls.enabled }}
+            - name: AMQ_TLS_ENABLED
+              value: "true"
+            - name: AMQ_TLS_MODE
+              value: {{ .Values.tls.mode | quote }}
+            - name: AMQ_TLS_CERT
+              value: "/tls/tls.crt"
+            - name: AMQ_TLS_KEY
+              value: "/tls/tls.key"
+            {{- if eq .Values.tls.mode "mutual" }}
+            - name: AMQ_TLS_CA
+              value: "/tls/ca.crt"
+            {{- end }}
+            {{- end }}
+            # Authentication
+            {{- if .Values.auth.enabled }}
+            - name: AMQ_AUTH_ENABLED
+              value: "true"
+            - name: AMQ_AUTH_TYPE
+              value: {{ .Values.auth.type | quote }}
+            {{- if eq .Values.auth.type "oauth2" }}
+            - name: AMQ_OAUTH2_ISSUER
+              value: {{ .Values.auth.oauth2.issuer | quote }}
+            - name: AMQ_OAUTH2_AUDIENCE
+              value: {{ .Values.auth.oauth2.audience | quote }}
+            - name: AMQ_OAUTH2_JWKS_URI
+              value: {{ .Values.auth.oauth2.jwksUri | quote }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.extraEnvVars }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: data
               mountPath: {{ .Values.config.storePath }}
             - name: config
-              mountPath: /config
+              mountPath: /etc/amq
               readOnly: true
+            {{- if and .Values.tls.enabled (not .Values.tls.certManager.enabled) }}
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "amq.fullname" . }}
+        {{- if and .Values.tls.enabled (not .Values.tls.certManager.enabled) }}
+        - name: tls
+          secret:
+            secretName: {{ include "amq.fullname" . }}-tls
+        {{- end }}
+        {{- if not .Values.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- else if .Values.persistence.existingClaim }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim }}
+        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -97,7 +235,7 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-  {{- if .Values.persistence.enabled }}
+  {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
   volumeClaimTemplates:
     - metadata:
         name: data
