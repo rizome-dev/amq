@@ -7,80 +7,7 @@
 
 Production-grade message queue designed for AI agent communication at scale. Built by [Rizome Labs](https://rizome.dev) for enterprise deployments supporting thousands of concurrent agents.
 
-## Quick Start
-
-### Docker Deployment
-```bash
-docker run -d \
-  --name amq-server \
-  -p 8080:8080 \
-  -p 9090:9090 \
-  -v /data/amq:/data \
-  -e AMQ_STORAGE_PATH=/data \
-  -e AMQ_WORKER_POOL_SIZE=50 \
-  -e AMQ_METRICS_ENABLED=true \
-  rizome/amq:latest
-```
-
-### Kubernetes Deployment
-```bash
-helm repo add rizome https://charts.rizome.dev
-helm install amq rizome/amq \
-  --namespace amq-system \
-  --create-namespace \
-  --set persistence.size=500Gi \
-  --set replicas=3 \
-  --set resources.requests.memory=16Gi \
-  --set resources.requests.cpu=8 \
-  --set autoscaling.enabled=true \
-  --set autoscaling.maxReplicas=10
-```
-
-## Integration Options
-
-### Go SDK
-```go
-import "github.com/rizome-dev/amq"
-
-// Initialize AMQ
-config := amq.DefaultConfig()
-config.StorePath = "/data/amq"
-config.WorkerPoolSize = 100
-amq, _ := amq.New(config)
-defer amq.Close()
-
-// Create queues
-amq.CreateQueue(ctx, "orders", types.QueueTypeTask)
-amq.CreateQueue(ctx, "analytics", types.QueueTypeTask)
-
-// Producer client
-producer, _ := amq.NewClient("producer-1")
-producer.SubmitTask(ctx, "orders", []byte("process order #123"),
-    client.WithPriority(9),
-    client.WithTTL(1*time.Hour),
-    client.WithMaxRetries(5))
-
-// Consumer client  
-consumer, _ := amq.NewClient("consumer-1")
-consumer.Subscribe(ctx, "orders")
-messages, _ := consumer.Receive(ctx, 10)
-for _, msg := range messages {
-    // Process message
-    consumer.Ack(ctx, msg.ID)
-}
-
-// Async consumer with handler
-async, _ := amq.NewAsyncConsumer("async-1")
-async.Subscribe(ctx, "analytics")
-async.Start(func(ctx context.Context, msg *types.Message) error {
-    // Process message
-    return nil // Auto-acks on success
-}, client.ConsumerOptions{
-    MaxConcurrency: 10,
-    BatchSize:      50,
-    AutoAck:        true,
-})
-```
+## Integration
 
 ### gRPC API
 ```protobuf
@@ -217,4 +144,4 @@ amq_pool_connections_active         # Active pooled connections
 
 ---
 
-Built with ❤️ by [Rizome Labs](https://rizome.dev)
+Built with ❤️  by [Rizome Labs](https://rizome.dev)
