@@ -5,9 +5,15 @@
 [![CI](https://github.com/rizome-dev/amq/actions/workflows/ci.yml/badge.svg)](https://github.com/rizome-dev/amq/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Production-grade message queue designed for AI agent communication at scale. Built by [Rizome Labs](https://rizome.dev) for enterprise deployments supporting thousands of concurrent agents.
+Production-grade, purpose-built message queue designed for AI agent communication at scale.
 
-## Integration
+built by [rizome labs](https://rizome.dev) | contact: [hi@rizome.dev](mailto:hi@rizome.dev)
+
+```bash
+go get github.com/rizome-dev/amq
+```
+
+## Deployment
 
 ### gRPC API
 ```protobuf
